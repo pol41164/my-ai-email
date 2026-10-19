@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { SentBriefRecord } from "@/app/api/sent-briefs/route";
 import type { DailyBrief } from "@/lib/daily/brief";
 
 const formatTime = (iso: string) =>
@@ -189,8 +190,80 @@ function Skeleton() {
   );
 }
 
+function BriefView({ record }: { record: SentBriefRecord }) {
+  const { brief } = record;
+  return (
+    <div className="grid gap-6 md:grid-cols-2">
+      {record.status === "failed" && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 md:col-span-2 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          這封晨報寄送失敗{record.error ? `：${record.error}` : ""}
+        </div>
+      )}
+      <section className="rounded-2xl bg-gradient-to-br from-amber-100 to-rose-100 p-6 md:col-span-2 dark:from-amber-950 dark:to-rose-950">
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-amber-800 dark:text-amber-300">
+          給你的一句話
+        </h2>
+        {brief.summary ? (
+          <p className="text-lg leading-8">{brief.summary.encouragement}</p>
+        ) : (
+          <Unavailable message={brief.errors?.summary} />
+        )}
+      </section>
+      <WeatherCard brief={brief} />
+      <StockCard brief={brief} />
+      <NewsCard brief={brief} />
+      <p className="text-xs text-zinc-400 md:col-span-2">
+        {record.subject} · 寄出時間：{formatTime(record.sentAt)}
+      </p>
+    </div>
+  );
+}
+
+function HistoryList({
+  records,
+  selectedId,
+  onSelect,
+}: {
+  records: SentBriefRecord[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <nav aria-label="寄信紀錄">
+      <h2 className="mb-3 text-sm font-semibold tracking-wide text-zinc-500 dark:text-zinc-400">
+        寄信紀錄
+      </h2>
+      <ul className="flex gap-2 overflow-x-auto pb-2 md:flex-col md:overflow-visible md:pb-0">
+        {records.map((r) => (
+          <li key={r.id} className="shrink-0">
+            <button
+              onClick={() => onSelect(r.id)}
+              aria-current={r.id === selectedId}
+              className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors ${
+                r.id === selectedId
+                  ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                  : "hover:bg-zinc-200/60 dark:hover:bg-zinc-800"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${r.status === "sent" ? "bg-green-500" : "bg-red-500"}`}
+                title={r.status === "sent" ? "已寄出" : "寄送失敗"}
+              />
+              <span className="tabular-nums">{r.brief.date}</span>
+              <span className="ml-auto text-xs opacity-60 tabular-nums">
+                {formatTime(r.sentAt).split(" ")[1]}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
 export default function Home() {
-  const [brief, setBrief] = useState<DailyBrief | null>(null);
+  const [records, setRecords] = useState<SentBriefRecord[] | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -198,9 +271,14 @@ export default function Home() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/daily-brief", { cache: "no-store" });
+      const res = await fetch("/api/sent-briefs", { cache: "no-store" });
       if (!res.ok) throw new Error(`API 回應 ${res.status}`);
-      setBrief(await res.json());
+      const data: SentBriefRecord[] = await res.json();
+      setRecords(data);
+      // 保留目前選的那筆，找不到就選最新一筆
+      setSelectedId((id) =>
+        data.some((r) => r.id === id) ? id : (data[0]?.id ?? null),
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -213,13 +291,15 @@ export default function Home() {
     load();
   }, [load]);
 
+  const selected = records?.find((r) => r.id === selectedId) ?? null;
+
   return (
     <div className="flex-1 bg-zinc-50 font-sans text-zinc-900 dark:bg-black dark:text-zinc-100">
-      <main className="mx-auto w-full max-w-4xl px-4 py-10 sm:px-6 sm:py-16">
+      <main className="mx-auto w-full max-w-5xl px-4 py-10 sm:px-6 sm:py-16">
         <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              {brief?.date ?? "載入中…"}
+              {selected?.brief.date ?? (loading ? "載入中…" : "—")}
             </p>
             <h1 className="mt-1 text-3xl font-semibold tracking-tight">
               每日晨報
@@ -240,30 +320,24 @@ export default function Home() {
           </div>
         )}
 
-        {!brief && loading && <Skeleton />}
+        {!records && loading && <Skeleton />}
 
-        {brief && (
+        {records?.length === 0 && (
+          <p className="rounded-2xl border border-dashed border-zinc-300 p-10 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+            還沒有寄出任何晨報
+          </p>
+        )}
+
+        {records && records.length > 0 && (
           <div
-            className={`grid gap-6 md:grid-cols-2 ${loading ? "opacity-60" : ""}`}
+            className={`grid gap-6 md:grid-cols-[200px_1fr] ${loading ? "opacity-60" : ""}`}
           >
-            <section className="rounded-2xl bg-gradient-to-br from-amber-100 to-rose-100 p-6 md:col-span-2 dark:from-amber-950 dark:to-rose-950">
-              <h2 className="mb-2 text-sm font-semibold tracking-wide text-amber-800 dark:text-amber-300">
-                給你的一句話
-              </h2>
-              {brief.summary ? (
-                <p className="text-lg leading-8">
-                  {brief.summary.encouragement}
-                </p>
-              ) : (
-                <Unavailable message={brief.errors?.summary} />
-              )}
-            </section>
-            <WeatherCard brief={brief} />
-            <StockCard brief={brief} />
-            <NewsCard brief={brief} />
-            <p className="text-xs text-zinc-400 md:col-span-2">
-              產生時間：{formatTime(brief.generatedAt)}
-            </p>
+            <HistoryList
+              records={records}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+            />
+            {selected && <BriefView record={selected} />}
           </div>
         )}
       </main>
